@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/vartanbeno/go-reddit/v2/reddit"
@@ -32,6 +33,50 @@ func IsNonImageLink(url string) bool {
 	return url[:len(prefix)] == prefix
 }
 
+var regex = regexp.MustCompile(`http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+`)
+
+func LinkExists(text string) bool {
+	return regex.MatchString(text)
+}
+
+type cache struct {
+	OldestID string `yaml:"oldest_id"`
+}
+
+func getOldestId() string {
+	data, err := os.ReadFile("cache.yaml")
+	if err != nil {
+		return ""
+	}
+
+	var cache *cache
+	if err := yaml.Unmarshal(data, &cache); err != nil {
+		return ""
+	}
+
+	return cache.OldestID
+}
+
+func updateOldestId(oldestID string) error {
+	data, err := os.ReadFile("cache.yaml")
+	if err != nil {
+		return fmt.Errorf("failed to open cache.yaml")
+	}
+
+	var cache *cache
+	if err := yaml.Unmarshal(data, &cache); err != nil {
+		return fmt.Errorf("failed to unmarshal cache.yaml")
+	}
+
+	cache.OldestID = oldestID
+	data, err = yaml.Marshal(cache)
+	if err != nil {
+		return fmt.Errorf("failed to marshal cache")
+	}
+
+	return os.WriteFile("cache.yaml", data, 0o644)
+}
+
 func downloadRawRedditData(redditCredsFilePath, outputFolder string) error {
 	redditCredsFile, err := os.ReadFile(redditCredsFilePath)
 	if err != nil {
@@ -53,18 +98,44 @@ func downloadRawRedditData(redditCredsFilePath, outputFolder string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	posts, _, err := client.Subreddit.NewPosts(ctx, "forsen", &reddit.ListOptions{
-		Limit: 300,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to get top forsen posts: %w", err)
-	}
+	oldestID := getOldestId()
+	oldestTime := time.Now()
 
-	for _, post := range posts {
-		if !IsNonImageLink(post.URL) {
-			continue
+	for i := 0; i < 20; i++ {
+		// posts, _, err := client.Subreddit.SearchPosts(ctx, "", "forsen", &reddit.ListPostSearchOptions{
+		// 	ListPostOptions: reddit.ListPostOptions{
+		// 		ListOptions: reddit.ListOptions{
+		// 			Limit:  100,
+		// 			Before: oldestID,
+		// 		},
+		// 		Time: "all",
+		// 	},
+		// 	Sort: "new",
+		// })
+		posts, _, err := client.Subreddit.NewPosts(ctx, "forsen", &reddit.ListOptions{
+			Limit:  100,
+			Before: oldestID,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to get top forsen posts: %w", err)
 		}
-		fmt.Println(post.ID, post.FullID, post.Title, post.Author, post.Body, post.URL)
+
+		for _, post := range posts {
+			if post.Created.Time.Before(oldestTime) {
+				oldestID = post.FullID
+				oldestTime = post.Created.Time
+				if err := updateOldestId(post.FullID); err != nil {
+					return fmt.Errorf("failed to update oldest id: %w", err)
+				}
+			}
+			if !IsNonImageLink(post.URL) {
+				continue
+			}
+			if LinkExists(post.Body) {
+				continue
+			}
+			fmt.Println(post.ID, post.FullID, post.Title, post.Author, post.Body, post.URL)
+		}
 	}
 
 	return nil

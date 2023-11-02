@@ -5,7 +5,6 @@ The purpose of dataset is letting LLM learn about world, forsen, emotes, twitch 
 
 # Steps
 
-- Download raw reddit posts, comments, replies
 - Filter out all images and innapropriate comments
 - Translate all reddit emotes to twitch emotes - e.g. :9673: -> forsenDespair
 
